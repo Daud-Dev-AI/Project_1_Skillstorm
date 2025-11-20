@@ -134,6 +134,8 @@ npm install
 ```
 Backend will start on **http://localhost:8080**
 
+Or you could use the Spring Boot Dashboard if you have the Extension installed in VS Code.
+
 ### Start Frontend Development Server
 ```bash
 # In a new terminal, from project root
@@ -268,6 +270,7 @@ inventory_management/
 - **Input Validation**: Bean Validation annotations
 - **Transaction Management**: @Transactional annotations
 - **Separation of Concerns**: Clear layer separation (Controller → Service → Repository)
+- **Reduced and Normalized Tables**: Tables are normalized to reduce redundancies and improve efficiency of CRUD Operations.
 
 ### Frontend
 - **Component Reusability**: Modular React components
@@ -284,14 +287,7 @@ inventory_management/
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## License
-
-This project is created for educational purposes as part of the Skillstorm training program.
-
+**Note**: This application uses sample data loaded automatically on startup. The database schema is recreated each time the application starts (ddl-auto: create-drop). For production use, change this to `validate` or `update`.
 ## Author
 
-Developed with ❤️ using Claude Code
-
----
-
-**Note**: This application uses sample data loaded automatically on startup. The database schema is recreated each time the application starts (ddl-auto: create-drop). For production use, change this to `validate` or `update`.
+Engr. Daud Ahmad
