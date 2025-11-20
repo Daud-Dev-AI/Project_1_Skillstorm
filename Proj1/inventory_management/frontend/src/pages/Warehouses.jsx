@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Box,
   Button,
@@ -30,6 +31,7 @@ import { warehouseAPI } from '../services/api';
  * Provides CRUD operations with validation and error handling
  */
 function Warehouses() {
+  const navigate = useNavigate();
   const [warehouses, setWarehouses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openDialog, setOpenDialog] = useState(false);
@@ -136,6 +138,10 @@ function Warehouses() {
     setSnackbar({ ...snackbar, open: false });
   };
 
+  const handleWarehouseDoubleClick = (warehouseId) => {
+    navigate(`/inventory?warehouse=${warehouseId}`);
+  };
+
   if (loading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
@@ -160,7 +166,11 @@ function Warehouses() {
       <Grid container spacing={3}>
         {warehouses.map((warehouse) => (
           <Grid item xs={12} sm={6} md={4} key={warehouse.id}>
-            <Card elevation={8}>
+            <Card
+              elevation={8}
+              onDoubleClick={() => handleWarehouseDoubleClick(warehouse.id)}
+              sx={{ cursor: 'pointer' }}
+            >
               <CardContent>
                 <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
                   <WarehouseIcon color="primary" fontSize="large" />

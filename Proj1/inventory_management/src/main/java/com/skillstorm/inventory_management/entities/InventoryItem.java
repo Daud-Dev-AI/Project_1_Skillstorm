@@ -13,7 +13,8 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
  * Each item belongs to a specific warehouse and contains product information.
  */
 @Entity
-@Table(name = "inventory_items")
+@Table(name = "inventory_items",
+       uniqueConstraints = @UniqueConstraint(columnNames = {"sku", "warehouse_id"}))
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -28,8 +29,9 @@ public class InventoryItem {
 
     /**
      * Stock Keeping Unit - unique identifier for the product
+     * SKU combined with warehouse_id must be unique (same product can exist in multiple warehouses)
      */
-    @Column(nullable = false, unique = true)
+    @Column(nullable = false)
     @NotBlank(message = "SKU is required")
     private String sku;
 

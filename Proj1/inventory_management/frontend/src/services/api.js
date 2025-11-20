@@ -28,8 +28,12 @@ export const inventoryAPI = {
   update: (id, item) => api.put(`/items/${id}`, item),
   delete: (id) => api.delete(`/items/${id}`),
   transfer: (transferRequest) => api.post('/items/transfer', transferRequest),
-  search: (searchTerm, warehouseId) =>
-    api.get('/items/search', { params: { searchTerm, warehouseId } }),
+  search: (searchTerm, warehouseId) => {
+    const params = {};
+    if (searchTerm != null && searchTerm !== '') params.searchTerm = searchTerm;
+    if (warehouseId != null) params.warehouseId = warehouseId;
+    return api.get('/items/search', { params });
+  },
   getCategories: () => api.get('/items/categories'),
 };
 

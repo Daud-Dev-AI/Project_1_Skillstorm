@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Box,
   Button,
@@ -23,25 +24,30 @@ import {
   InputAdornment,
   Grid,
   CircularProgress,
+  TablePagination,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import SearchIcon from '@mui/icons-material/Search';
+import AddShoppingCartIcon from '@mui/icons-material/AddShoppingCart';
 import { inventoryAPI, warehouseAPI } from '../services/api';
+import { logActivity } from '../utils/activityLogger';
 
 /**
  * InventoryItems page component for managing inventory items
  * Provides CRUD operations, search, filter, and transfer functionality
  */
 function InventoryItems() {
+  const [searchParams] = useSearchParams();
   const [items, setItems] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openDialog, setOpenDialog] = useState(false);
   const [openTransferDialog, setOpenTransferDialog] = useState(false);
+  const [openAddStockDialog, setOpenAddStockDialog] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
   const [transferItem, setTransferItem] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -60,12 +66,41 @@ function InventoryItems() {
     destinationWarehouseId: '',
     quantity: '',
   });
+  const [addStockData, setAddStockData] = useState({
+    itemId: '',
+    quantityToAdd: '',
+  });
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [deleteConfirmDialog, setDeleteConfirmDialog] = useState({ open: false, item: null });
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
 
   useEffect(() => {
     fetchData();
   }, []);
+
+  // Handle warehouse filter from URL params
+  const handleSearchWithWarehouse = useCallback(async (warehouseId) => {
+    try {
+      const cleanSearchTerm = searchTerm && searchTerm.trim() !== '' ? searchTerm.trim() : null;
+      const cleanWarehouseId = warehouseId != null ? parseInt(warehouseId, 10) : null;
+
+      const response = await inventoryAPI.search(cleanSearchTerm, cleanWarehouseId);
+      setItems(response.data);
+    } catch (error) {
+      showSnackbar('Search failed: ' + (error.response?.data?.message || error.message), 'error');
+    }
+  }, [searchTerm]);
+
+  useEffect(() => {
+    const warehouseParam = searchParams.get('warehouse');
+    if (warehouseParam && warehouses.length > 0) {
+      const warehouseId = parseInt(warehouseParam, 10);
+      setFilterWarehouse(warehouseId);
+      // Trigger search with the warehouse filter
+      handleSearchWithWarehouse(warehouseId);
+    }
+  }, [searchParams, warehouses, handleSearchWithWarehouse]);
 
   const fetchData = async () => {
     try {
@@ -132,6 +167,23 @@ function InventoryItems() {
     setTransferData({ destinationWarehouseId: '', quantity: '' });
   };
 
+  const handleOpenAddStockDialog = () => {
+    setAddStockData({ itemId: '', quantityToAdd: '' });
+    setOpenAddStockDialog(true);
+  };
+
+  const handleCloseAddStockDialog = () => {
+    setOpenAddStockDialog(false);
+    setAddStockData({ itemId: '', quantityToAdd: '' });
+  };
+
+  const handleAddStockInputChange = (e) => {
+    setAddStockData({
+      ...addStockData,
+      [e.target.name]: e.target.value,
+    });
+  };
+
   const handleInputChange = (e) => {
     setFormData({
       ...formData,
@@ -156,20 +208,42 @@ function InventoryItems() {
     };
 
     try {
+      const warehouse = warehouses.find(wh => wh.id === itemData.warehouseId);
+
       if (editingItem) {
         await inventoryAPI.update(editingItem.id, itemData);
         showSnackbar('Item updated successfully', 'success');
+
+        logActivity({
+          type: 'UPDATED',
+          itemName: itemData.name,
+          description: `Updated ${itemData.name} (SKU: ${itemData.sku})`,
+          warehouse: warehouse?.name || 'Unknown',
+        });
       } else {
         await inventoryAPI.create(itemData);
         showSnackbar('Item created successfully', 'success');
+
+        logActivity({
+          type: 'CREATED',
+          itemName: itemData.name,
+          description: `Created new item with ${itemData.quantity} units (SKU: ${itemData.sku})`,
+          warehouse: warehouse?.name || 'Unknown',
+        });
       }
       handleCloseDialog();
       fetchData();
     } catch (error) {
-      const errorMessage = error.response?.data?.message ||
-                          error.response?.data?.validationErrors ?
-                          Object.values(error.response.data.validationErrors).join(', ') :
-                          error.message;
+      let errorMessage = error.message;
+
+      if (error.response?.data) {
+        if (error.response.data.validationErrors) {
+          errorMessage = Object.values(error.response.data.validationErrors).join(', ');
+        } else if (error.response.data.message) {
+          errorMessage = error.response.data.message;
+        }
+      }
+
       showSnackbar('Error: ' + errorMessage, 'error');
     }
   };
@@ -186,11 +260,68 @@ function InventoryItems() {
 
     try {
       await inventoryAPI.transfer(transferRequest);
+
+      const destinationWarehouse = warehouses.find(wh => wh.id === transferRequest.destinationWarehouseId);
+
+      logActivity({
+        type: 'TRANSFERRED',
+        itemName: transferItem.name,
+        description: `Transferred ${transferRequest.quantity} units from ${transferItem.warehouseName} to ${destinationWarehouse?.name || 'Unknown'}`,
+        warehouse: `${transferItem.warehouseName} → ${destinationWarehouse?.name || 'Unknown'}`,
+      });
+
       showSnackbar('Item transferred successfully', 'success');
       handleCloseTransferDialog();
       fetchData();
     } catch (error) {
       showSnackbar('Error: ' + (error.response?.data?.message || error.message), 'error');
+    }
+  };
+
+  const handleAddStockSubmit = async (e) => {
+    e.preventDefault();
+
+    const selectedItem = items.find(item => item.id === parseInt(addStockData.itemId));
+    if (!selectedItem) {
+      showSnackbar('Error: Item not found', 'error');
+      return;
+    }
+
+    const updatedItemData = {
+      sku: selectedItem.sku,
+      name: selectedItem.name,
+      description: selectedItem.description,
+      category: selectedItem.category,
+      quantity: selectedItem.quantity + parseInt(addStockData.quantityToAdd),
+      storageLocation: selectedItem.storageLocation,
+      warehouseId: selectedItem.warehouseId,
+    };
+
+    try {
+      await inventoryAPI.update(selectedItem.id, updatedItemData);
+
+      logActivity({
+        type: 'STOCK_ADDED',
+        itemName: selectedItem.name,
+        description: `Added ${addStockData.quantityToAdd} units (${selectedItem.quantity} → ${updatedItemData.quantity})`,
+        warehouse: selectedItem.warehouseName,
+      });
+
+      showSnackbar(`Successfully added ${addStockData.quantityToAdd} units to ${selectedItem.name}`, 'success');
+      handleCloseAddStockDialog();
+      fetchData();
+    } catch (error) {
+      let errorMessage = error.message;
+
+      if (error.response?.data) {
+        if (error.response.data.validationErrors) {
+          errorMessage = Object.values(error.response.data.validationErrors).join(', ');
+        } else if (error.response.data.message) {
+          errorMessage = error.response.data.message;
+        }
+      }
+
+      showSnackbar('Error: ' + errorMessage, 'error');
     }
   };
 
@@ -200,7 +331,16 @@ function InventoryItems() {
 
   const handleDeleteConfirm = async () => {
     try {
-      await inventoryAPI.delete(deleteConfirmDialog.item.id);
+      const itemToDelete = deleteConfirmDialog.item;
+      await inventoryAPI.delete(itemToDelete.id);
+
+      logActivity({
+        type: 'DELETED',
+        itemName: itemToDelete.name,
+        description: `Deleted item (SKU: ${itemToDelete.sku})`,
+        warehouse: itemToDelete.warehouseName,
+      });
+
       showSnackbar('Item deleted successfully', 'success');
       setDeleteConfirmDialog({ open: false, item: null });
       fetchData();
@@ -211,11 +351,12 @@ function InventoryItems() {
 
   const handleSearch = async () => {
     try {
-      const response = await inventoryAPI.search(
-        searchTerm || null,
-        filterWarehouse || null
-      );
+      const cleanSearchTerm = searchTerm && searchTerm.trim() !== '' ? searchTerm.trim() : null;
+      const cleanWarehouseId = filterWarehouse && filterWarehouse !== '' ? parseInt(filterWarehouse, 10) : null;
+
+      const response = await inventoryAPI.search(cleanSearchTerm, cleanWarehouseId);
       setItems(response.data);
+      setPage(0); // Reset to first page after search
     } catch (error) {
       showSnackbar('Search failed: ' + (error.response?.data?.message || error.message), 'error');
     }
@@ -225,6 +366,7 @@ function InventoryItems() {
     setSearchTerm('');
     setFilterWarehouse('');
     setFilterCategory('');
+    setPage(0); // Reset to first page when clearing filters
     fetchData();
   };
 
@@ -236,6 +378,15 @@ function InventoryItems() {
     setSnackbar({ ...snackbar, open: false });
   };
 
+  const handleChangePage = (event, newPage) => {
+    setPage(newPage);
+  };
+
+  const handleChangeRowsPerPage = (event) => {
+    setRowsPerPage(parseInt(event.target.value, 10));
+    setPage(0); // Reset to first page when changing rows per page
+  };
+
   // Apply local category filter (since we already have all items)
   const filteredItems = items.filter(item => {
     if (filterCategory && item.category !== filterCategory) {
@@ -243,6 +394,12 @@ function InventoryItems() {
     }
     return true;
   });
+
+  // Apply pagination
+  const paginatedItems = filteredItems.slice(
+    page * rowsPerPage,
+    page * rowsPerPage + rowsPerPage
+  );
 
   if (loading) {
     return (
@@ -256,19 +413,28 @@ function InventoryItems() {
     <Box>
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
         <Typography variant="h4">Inventory Items</Typography>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => handleOpenDialog()}
-        >
-          Add Item
-        </Button>
+        <Box display="flex" gap={2}>
+          <Button
+            variant="outlined"
+            startIcon={<AddShoppingCartIcon />}
+            onClick={handleOpenAddStockDialog}
+          >
+            Add Stock
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => handleOpenDialog()}
+          >
+            Add New Item
+          </Button>
+        </Box>
       </Box>
 
       {/* Search and Filter Section */}
-      <Paper elevation={8} sx={{ p: 2, mb: 3 }}>
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={3}>
+      <Paper elevation={3} sx={{ p: 2, mb: 3 }}>
+        <Grid container spacing={2} alignItems="center">
+          <Grid item xs={12} md={3.5}>
             <TextField
               fullWidth
               label="Search"
@@ -312,7 +478,10 @@ function InventoryItems() {
               fullWidth
               label="Category"
               value={filterCategory}
-              onChange={(e) => setFilterCategory(e.target.value)}
+              onChange={(e) => {
+                setFilterCategory(e.target.value);
+                setPage(0); // Reset to first page when changing category filter
+              }}
               SelectProps={{
                 displayEmpty: true,
               }}
@@ -328,13 +497,13 @@ function InventoryItems() {
               ))}
             </TextField>
           </Grid>
-          <Grid item xs={12} md={3}>
-            <Box display="flex" gap={1} height="56px" alignItems="center">
-              <Button variant="contained" onClick={handleSearch} fullWidth sx={{ height: '56px' }}>
-                Search
+          <Grid item xs={12} md={2.5}>
+            <Box display="flex" gap={1} height="56px" alignItems="center" justifyContent="flex-end">
+              <Button variant="contained" onClick={handleSearch} sx={{ height: '56px', minWidth: '100px' }}>
+                SEARCH
               </Button>
-              <Button variant="outlined" onClick={handleClearFilters} sx={{ height: '56px' }}>
-                Clear
+              <Button variant="outlined" onClick={handleClearFilters} sx={{ height: '56px', minWidth: '90px' }}>
+                CLEAR
               </Button>
             </Box>
           </Grid>
@@ -342,21 +511,23 @@ function InventoryItems() {
       </Paper>
 
       {/* Items Table */}
-      <TableContainer component={Paper} elevation={8}>
+      <TableContainer component={Paper} elevation={3}>
         <Table>
           <TableHead>
-            <TableRow>
-              <TableCell>SKU</TableCell>
-              <TableCell>Name</TableCell>
-              <TableCell>Category</TableCell>
-              <TableCell>Quantity</TableCell>
-              <TableCell>Warehouse</TableCell>
-              <TableCell>Storage Location</TableCell>
-              <TableCell>Actions</TableCell>
+            <TableRow sx={{
+              bgcolor: (theme) => theme.palette.mode === 'dark' ? 'grey.800' : 'primary.main'
+            }}>
+              <TableCell sx={{ color: 'white', fontWeight: 'bold' }}>SKU</TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 'bold' }}>Name</TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 'bold' }}>Category</TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 'bold' }}>Quantity</TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 'bold' }}>Warehouse</TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 'bold' }}>Storage Location</TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 'bold' }}>Actions</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {filteredItems.map((item) => (
+            {paginatedItems.map((item) => (
               <TableRow key={item.id}>
                 <TableCell>{item.sku}</TableCell>
                 <TableCell>
@@ -404,6 +575,15 @@ function InventoryItems() {
             ))}
           </TableBody>
         </Table>
+        <TablePagination
+          rowsPerPageOptions={[5, 10, 15, 50]}
+          component="div"
+          count={filteredItems.length}
+          rowsPerPage={rowsPerPage}
+          page={page}
+          onPageChange={handleChangePage}
+          onRowsPerPageChange={handleChangeRowsPerPage}
+        />
       </TableContainer>
 
       {filteredItems.length === 0 && (
@@ -413,94 +593,99 @@ function InventoryItems() {
       )}
 
       {/* Add/Edit Dialog */}
-      <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="md" fullWidth>
+      <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="sm" fullWidth>
         <form onSubmit={handleSubmit}>
           <DialogTitle>
             {editingItem ? 'Edit Item' : 'Add New Item'}
           </DialogTitle>
           <DialogContent>
-            <Grid container spacing={2} sx={{ mt: 0.5 }}>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  name="sku"
-                  label="SKU"
-                  fullWidth
-                  required
-                  value={formData.sku}
-                  onChange={handleInputChange}
-                  disabled={editingItem !== null}
-                />
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  name="name"
-                  label="Item Name"
-                  fullWidth
-                  required
-                  value={formData.name}
-                  onChange={handleInputChange}
-                />
-              </Grid>
-              <Grid item xs={12}>
-                <TextField
-                  name="description"
-                  label="Description"
-                  fullWidth
-                  multiline
-                  rows={2}
-                  value={formData.description}
-                  onChange={handleInputChange}
-                />
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  name="category"
-                  label="Category"
-                  fullWidth
-                  value={formData.category}
-                  onChange={handleInputChange}
-                />
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  name="quantity"
-                  label="Quantity"
-                  type="number"
-                  fullWidth
-                  required
-                  inputProps={{ min: 0 }}
-                  value={formData.quantity}
-                  onChange={handleInputChange}
-                />
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  select
-                  name="warehouseId"
-                  label="Warehouse"
-                  fullWidth
-                  required
-                  value={formData.warehouseId}
-                  onChange={handleInputChange}
-                >
-                  {warehouses.map((wh) => (
-                    <MenuItem key={wh.id} value={wh.id}>
-                      {wh.name} (Available: {wh.availableCapacity})
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  name="storageLocation"
-                  label="Storage Location"
-                  fullWidth
-                  placeholder="e.g., Aisle A, Shelf 5"
-                  value={formData.storageLocation}
-                  onChange={handleInputChange}
-                />
-              </Grid>
-            </Grid>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+              <TextField
+                name="sku"
+                label="SKU"
+                fullWidth
+                required
+                value={formData.sku}
+                onChange={handleInputChange}
+                disabled={editingItem !== null}
+                helperText={editingItem ? "SKU cannot be changed" : "Unique stock keeping unit"}
+              />
+
+              <TextField
+                name="name"
+                label="Item Name"
+                fullWidth
+                required
+                value={formData.name}
+                onChange={handleInputChange}
+              />
+
+              <TextField
+                name="description"
+                label="Description"
+                fullWidth
+                multiline
+                rows={4}
+                value={formData.description}
+                onChange={handleInputChange}
+                placeholder="Enter a detailed description of the item"
+              />
+
+              <TextField
+                name="category"
+                label="Category"
+                fullWidth
+                value={formData.category}
+                onChange={handleInputChange}
+                placeholder="e.g., Electronics, Furniture, Clothing"
+              />
+
+              <TextField
+                name="quantity"
+                label="Quantity"
+                type="number"
+                fullWidth
+                required
+                inputProps={{ min: 0 }}
+                value={formData.quantity}
+                onChange={handleInputChange}
+              />
+
+              <TextField
+                select
+                name="warehouseId"
+                label="Warehouse"
+                fullWidth
+                required
+                value={formData.warehouseId}
+                onChange={handleInputChange}
+                SelectProps={{
+                  MenuProps: {
+                    PaperProps: {
+                      style: {
+                        maxHeight: 300,
+                      },
+                    },
+                  },
+                }}
+                helperText="Select the warehouse for this item"
+              >
+                {warehouses.map((wh) => (
+                  <MenuItem key={wh.id} value={wh.id}>
+                    {wh.name} - Available: {wh.availableCapacity} / {wh.maxCapacity}
+                  </MenuItem>
+                ))}
+              </TextField>
+
+              <TextField
+                name="storageLocation"
+                label="Storage Location"
+                fullWidth
+                placeholder="e.g., Aisle A, Shelf 5"
+                value={formData.storageLocation}
+                onChange={handleInputChange}
+              />
+            </Box>
           </DialogContent>
           <DialogActions>
             <Button onClick={handleCloseDialog}>Cancel</Button>
@@ -534,6 +719,15 @@ function InventoryItems() {
                   value={transferData.destinationWarehouseId}
                   onChange={handleTransferInputChange}
                   sx={{ mb: 2 }}
+                  SelectProps={{
+                    MenuProps: {
+                      PaperProps: {
+                        style: {
+                          maxHeight: 300,
+                        },
+                      },
+                    },
+                  }}
                 >
                   {warehouses
                     .filter(wh => wh.id !== transferItem.warehouseId)
@@ -560,6 +754,110 @@ function InventoryItems() {
             <Button onClick={handleCloseTransferDialog}>Cancel</Button>
             <Button type="submit" variant="contained" color="secondary">
               Transfer
+            </Button>
+          </DialogActions>
+        </form>
+      </Dialog>
+
+      {/* Add Stock Dialog */}
+      <Dialog open={openAddStockDialog} onClose={handleCloseAddStockDialog} maxWidth="sm" fullWidth>
+        <form onSubmit={handleAddStockSubmit}>
+          <DialogTitle>Add Stock to Existing Item</DialogTitle>
+          <DialogContent>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+              <Alert severity="info">
+                Select an existing item to add more quantity to its current warehouse.
+              </Alert>
+
+              <TextField
+                select
+                name="itemId"
+                label="Select Item"
+                fullWidth
+                required
+                value={addStockData.itemId}
+                onChange={handleAddStockInputChange}
+                SelectProps={{
+                  MenuProps: {
+                    PaperProps: {
+                      style: {
+                        maxHeight: 300,
+                      },
+                    },
+                  },
+                }}
+                helperText="Choose the item you want to add stock to"
+              >
+                {items
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((item) => (
+                    <MenuItem key={item.id} value={item.id}>
+                      {item.name} (SKU: {item.sku}) - Current Qty: {item.quantity} - {item.warehouseName}
+                    </MenuItem>
+                  ))}
+              </TextField>
+
+              {addStockData.itemId && (
+                <>
+                  <Box
+                    sx={{
+                      p: 2,
+                      bgcolor: 'action.hover',
+                      border: 1,
+                      borderColor: 'divider',
+                      borderRadius: 1
+                    }}
+                  >
+                    {(() => {
+                      const selectedItem = items.find(item => item.id === parseInt(addStockData.itemId));
+                      const warehouse = warehouses.find(wh => wh.id === selectedItem?.warehouseId);
+                      return selectedItem ? (
+                        <>
+                          <Typography variant="subtitle2" fontWeight="bold">
+                            {selectedItem.name}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            SKU: {selectedItem.sku}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Current Quantity: {selectedItem.quantity}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Warehouse: {selectedItem.warehouseName}
+                          </Typography>
+                          {warehouse && (
+                            <Typography variant="body2" color={warehouse.availableCapacity > 0 ? 'success.main' : 'error.main'}>
+                              Warehouse Available Capacity: {warehouse.availableCapacity}
+                            </Typography>
+                          )}
+                        </>
+                      ) : null;
+                    })()}
+                  </Box>
+
+                  <TextField
+                    name="quantityToAdd"
+                    label="Quantity to Add"
+                    type="number"
+                    fullWidth
+                    required
+                    inputProps={{ min: 1 }}
+                    value={addStockData.quantityToAdd}
+                    onChange={handleAddStockInputChange}
+                    helperText="Enter the number of units to add to the current stock"
+                  />
+                </>
+              )}
+            </Box>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleCloseAddStockDialog}>Cancel</Button>
+            <Button
+              type="submit"
+              variant="contained"
+              disabled={!addStockData.itemId || !addStockData.quantityToAdd}
+            >
+              Add Stock
             </Button>
           </DialogActions>
         </form>

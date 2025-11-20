@@ -77,9 +77,13 @@ public class InventoryItemService {
      */
     @Transactional
     public InventoryItemDto createItem(InventoryItemDto itemDto) {
-        // Check for duplicate SKU
-        if (inventoryItemRepository.existsBySku(itemDto.getSku())) {
-            throw new DuplicateResourceException("Item with SKU '" + itemDto.getSku() + "' already exists");
+        // Check for duplicate SKU in the same warehouse
+        List<InventoryItem> existingItems = inventoryItemRepository.findByWarehouseId(itemDto.getWarehouseId());
+        boolean skuExistsInWarehouse = existingItems.stream()
+                .anyMatch(item -> item.getSku().equals(itemDto.getSku()));
+
+        if (skuExistsInWarehouse) {
+            throw new DuplicateResourceException("Item with SKU '" + itemDto.getSku() + "' already exists in this warehouse");
         }
 
         // Find warehouse
@@ -123,10 +127,16 @@ public class InventoryItemService {
         InventoryItem item = inventoryItemRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Inventory item not found with id: " + id));
 
-        // Check for duplicate SKU (excluding current item)
-        if (!item.getSku().equals(itemDto.getSku()) &&
-            inventoryItemRepository.existsBySku(itemDto.getSku())) {
-            throw new DuplicateResourceException("Item with SKU '" + itemDto.getSku() + "' already exists");
+        // Check for duplicate SKU in the target warehouse (excluding current item)
+        if (!item.getSku().equals(itemDto.getSku()) || !item.getWarehouse().getId().equals(itemDto.getWarehouseId())) {
+            List<InventoryItem> existingItems = inventoryItemRepository.findByWarehouseId(itemDto.getWarehouseId());
+            boolean skuExistsInWarehouse = existingItems.stream()
+                    .filter(i -> !i.getId().equals(id)) // Exclude current item
+                    .anyMatch(i -> i.getSku().equals(itemDto.getSku()));
+
+            if (skuExistsInWarehouse) {
+                throw new DuplicateResourceException("Item with SKU '" + itemDto.getSku() + "' already exists in this warehouse");
+            }
         }
 
         // If warehouse is changing or quantity is increasing, check capacity
@@ -219,28 +229,28 @@ public class InventoryItemService {
             );
         }
 
-        // If transferring partial quantity, create new item in destination warehouse
+        // Check if same SKU exists in destination warehouse
+        List<InventoryItem> existingItems = inventoryItemRepository.findByWarehouseId(destinationWarehouse.getId());
+        InventoryItem existingItem = existingItems.stream()
+                .filter(i -> i.getSku().equals(item.getSku()))
+                .findFirst()
+                .orElse(null);
+
+        // If transferring partial quantity
         if (transferRequest.getQuantity() < item.getQuantity()) {
             // Reduce quantity in source
             item.setQuantity(item.getQuantity() - transferRequest.getQuantity());
             inventoryItemRepository.save(item);
 
-            // Check if same SKU exists in destination warehouse
-            List<InventoryItem> existingItems = inventoryItemRepository.findByWarehouseId(destinationWarehouse.getId());
-            InventoryItem existingItem = existingItems.stream()
-                    .filter(i -> i.getSku().equals(item.getSku()))
-                    .findFirst()
-                    .orElse(null);
-
             if (existingItem != null) {
-                // Update existing item quantity
+                // Update existing item quantity in destination
                 existingItem.setQuantity(existingItem.getQuantity() + transferRequest.getQuantity());
                 InventoryItem updated = inventoryItemRepository.save(existingItem);
                 return convertToDto(updated);
             } else {
-                // Create new item in destination
+                // Create new item in destination with same SKU
                 InventoryItem newItem = new InventoryItem();
-                newItem.setSku(item.getSku() + "-" + System.currentTimeMillis()); // Make SKU unique
+                newItem.setSku(item.getSku()); // Keep same SKU
                 newItem.setName(item.getName());
                 newItem.setDescription(item.getDescription());
                 newItem.setCategory(item.getCategory());
@@ -251,10 +261,22 @@ public class InventoryItemService {
                 return convertToDto(created);
             }
         } else {
-            // Transfer entire item
-            item.setWarehouse(destinationWarehouse);
-            InventoryItem updated = inventoryItemRepository.save(item);
-            return convertToDto(updated);
+            // Transfer entire quantity
+            if (existingItem != null) {
+                // Merge with existing item in destination
+                existingItem.setQuantity(existingItem.getQuantity() + item.getQuantity());
+                inventoryItemRepository.save(existingItem);
+
+                // Delete the source item
+                inventoryItemRepository.delete(item);
+
+                return convertToDto(existingItem);
+            } else {
+                // Move entire item to destination warehouse
+                item.setWarehouse(destinationWarehouse);
+                InventoryItem updated = inventoryItemRepository.save(item);
+                return convertToDto(updated);
+            }
         }
     }
 
@@ -267,7 +289,8 @@ public class InventoryItemService {
      */
     @Transactional(readOnly = true)
     public List<InventoryItemDto> searchItems(String searchTerm, Long warehouseId) {
-        return inventoryItemRepository.searchItems(searchTerm, warehouseId).stream()
+        String searchPattern = searchTerm != null ? "%" + searchTerm.toLowerCase() + "%" : null;
+        return inventoryItemRepository.searchItems(searchTerm, searchPattern, warehouseId).stream()
                 .map(this::convertToDto)
                 .collect(Collectors.toList());
     }

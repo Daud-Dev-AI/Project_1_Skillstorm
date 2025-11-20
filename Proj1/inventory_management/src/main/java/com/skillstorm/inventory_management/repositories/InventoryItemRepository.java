@@ -69,15 +69,18 @@ public interface InventoryItemRepository extends JpaRepository<InventoryItem, Lo
      * Searches items by multiple criteria
      *
      * @param searchTerm Search term to match against name, SKU, or category
+     * @param searchPattern Search pattern with wildcards
      * @param warehouseId Optional warehouse ID filter
      * @return List of matching items
      */
     @Query("SELECT i FROM InventoryItem i WHERE " +
-           "(:searchTerm IS NULL OR LOWER(i.name) LIKE LOWER(CONCAT('%', :searchTerm, '%')) OR " +
-           "LOWER(i.sku) LIKE LOWER(CONCAT('%', :searchTerm, '%')) OR " +
-           "LOWER(i.category) LIKE LOWER(CONCAT('%', :searchTerm, '%'))) AND " +
+           "(:searchTerm IS NULL OR " +
+           "LOWER(i.name) LIKE :searchPattern OR " +
+           "LOWER(i.sku) LIKE :searchPattern OR " +
+           "LOWER(i.category) LIKE :searchPattern) AND " +
            "(:warehouseId IS NULL OR i.warehouse.id = :warehouseId)")
     List<InventoryItem> searchItems(@Param("searchTerm") String searchTerm,
+                                    @Param("searchPattern") String searchPattern,
                                     @Param("warehouseId") Long warehouseId);
 
     /**
